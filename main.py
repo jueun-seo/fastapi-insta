@@ -33,7 +33,12 @@ class Comment(Base):
   post_id: Mapped[int] = mapped_column(ForeignKey('posts.id'))
   post: Mapped['Post'] = relationship(back_populates='comments')
 
+class User(Base):
+  __tablename__ = 'users'
 
+  id: Mapped[int] = mapped_column(primary_key=True)
+  username: Mapped[str] = mapped_column(unique=True) #unique한가요?체크. 모든 username이 독립적일 수 있도록
+  password_hash: Mapped[str]
 
 app = FastAPI()
 templates = Jinja2Templates(directory='templates')
@@ -153,3 +158,14 @@ def comment_delete(post_id: int, comment_id: int, db: Session = Depends(get_db))
 
   return RedirectResponse(f'/posts/{post_id}', status_code=303)
 
+@app.get('/signup')
+def signup_form(request: Request):
+  return templates.TemplateResponse(
+    request=request,
+    name='signup.html'
+  )
+
+
+@app.post('/signup')
+def signup():
+  pass
