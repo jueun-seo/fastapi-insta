@@ -5,6 +5,7 @@ from sqlalchemy import create_engine, select, func, ForeignKey
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, Session, relationship
 from datetime import datetime
 from pwdlib import PasswordHash
+import secrets
 
 DB_URL = 'postgresql+psycopg://sd4:sd4@localhost:5432/insta'
 engine = create_engine(DB_URL, echo=True)
@@ -45,7 +46,7 @@ class UserSession(Base):
   __tablename__ = 'sessions'
 
   id: Mapped[str] = mapped_column(primary_key=True)
-  user_id: Mapped[int] = mapped_column(ForeignKey('user.id'))
+  user_id: Mapped[int] = mapped_column(ForeignKey('users.id'))
   created_at: Mapped[datetime] = mapped_column(server_default=func.now())
   user: Mapped['User'] = relationship()
 
@@ -66,6 +67,20 @@ def get_post_or_404(post_id: int, db: Session = Depends(get_db)):
   
   return post
 
+def get_current_user(request:Request, db: Session = Depends(get_db)):
+  session_id = request.cookies.get('session_id')
+
+  #신분증 유무 판단
+  if session_id is None:
+    return None
+
+  user_session = db.get(UserSession, session_id)
+
+  #신분증 유효한지 검사
+  if user_session is None:
+    return None
+
+  return user_session.user
 
 @app.get('/')
 def home():
@@ -73,7 +88,11 @@ def home():
 
 
 @app.get('/posts')
-def post_list(request: Request, db: Session = Depends(get_db)):
+def post_list(
+  request: Request, 
+  db: Session = Depends(get_db),
+  user: User | None = Depends(get_current_user)
+  ):
   # with Session(engine) as db:
   
   # posts = db.scalars(select(Post)).all()
@@ -81,15 +100,19 @@ def post_list(request: Request, db: Session = Depends(get_db)):
   return templates.TemplateResponse(
     request=request,
     name='list.html',
-    context={'posts': posts}
+    context={'posts': posts, 'user': user}
   )
 
 
 @app.get('/posts/new')
-def post_new(request: Request):
+def post_new(
+    request: Request,
+    user: User | None = Depends(get_current_user) # |기호는 or
+  ):
   return templates.TemplateResponse(
     request=request,
-    name='new.html'
+    name='new.html',
+    context={'user':user}
   )
 
 
@@ -105,23 +128,32 @@ def post_create(content: str = Form(), db: Session = Depends(get_db)):
 
 
 @app.get('/posts/{post_id}')
-def post_detail(request: Request, post: Post = Depends(get_post_or_404)):
+def post_detail(
+  request: Request,
+  post: Post = Depends(get_post_or_404),
+  user: User | None = Depends(get_current_user)
+):
   # comments = db.scalars(select(Comment).where().order_by(Comment.created_at.desc()))
   return templates.TemplateResponse(
     request=request,
     name='detail.html',
     context={
-      'post': post
+      'post': post,
+      'user': user
     }
   )
 
 
 @app.get('/posts/{post_id}/edit')
-def post_edit(request: Request, post: Post = Depends(get_post_or_404)):
+def post_edit(
+  request: Request,
+  post: Post = Depends(get_post_or_404),
+  user: User | None = Depends(get_current_user)
+):
   return templates.TemplateResponse(
     request=request,
     name='edit.html',
-    context={'post': post}
+    context={'post': post, 'user': user}
   )
 
 
@@ -169,10 +201,14 @@ def comment_delete(post_id: int, comment_id: int, db: Session = Depends(get_db))
   return RedirectResponse(f'/posts/{post_id}', status_code=303)
 
 @app.get('/signup')
-def signup_form(request: Request):
+def signup_form(
+  request: Request,
+  user: User | None = Depends(get_current_user)
+):
   return templates.TemplateResponse(
     request=request,
-    name='signup.html'
+    name='signup.html',
+    context={'user': user}
   )
 
 
@@ -181,7 +217,8 @@ def signup(
   request: Request,
   username: str = Form(),
   password: str = Form(),
-  db: Session = Depends(get_db) 
+  db: Session = Depends(get_db),
+  current_user: User | None = Depends(get_current_user)
 ):
   #이미 있는 유저인지 검증
   exists = db.scalar(select(User).where(User.username==username)) #usertable 조회
@@ -191,7 +228,7 @@ def signup(
     return templates.TemplateResponse(
       request=request,
       name='signup.html',
-      context={'error': '이미 있는 아이디입니다.'}
+      context={'error': '이미 있는 아이디입니다.', 'user': current_user}
     )
 
   hashed_pw=password_hash.hash(password)
@@ -210,5 +247,45 @@ def login_form(request: Request):
   )
 
 @app.post('/login')
-def login():
-  pass
+def login(
+  request: Request,
+  username: str = Form(),
+  password: str = Form(),
+  db: Session = Depends(get_db)
+):
+  user = db.scalar(select(User).where(User.username==username))
+
+  # password_hash.verify(password, user.password_hash)
+
+  if (user is None) or not (password_hash.verify(password, user.password_hash)):
+    return templates.TemplateResponse(
+     request=request,
+     name='login.html',
+     context={'error': '아이디가 존재하지 않거나 비밀번호가 틀렸습니다.'}
+   )
+
+  #신분증 발행
+  session_id = secrets.token_urlsafe(32) 
+  #발행한 신분증을 DB에 저장
+  user_session = UserSession(id=session_id, user=user)
+  db.add(user_session)
+  db.commit()
+
+#신분증을 유저한테 전달
+  response = RedirectResponse('/posts', status_code=303)
+  response.set_cookie('session_id', session_id, httponly=True, samesite='lax')
+  return response
+
+@app.post('/logout')
+def logout(request: Request, db: Session=Depends(get_db)):
+  #신분증정보 가져오기
+  session_id=request.cookies.get('session_id')
+  user_session = db.get(UserSession, session_id)
+
+  if user_session:
+    db.delete(user_session)
+    db.commit()
+
+  response = RedirectResponse('/posts', status_code=303)
+  response.delete_cookie('session_id')
+  return response
