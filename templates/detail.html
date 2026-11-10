@@ -6,11 +6,14 @@
 {% block content %}
 
   <p>{{ post.content }}</p>
+  <small>{{ post.user.username }}</small>
 
-  <a href="/posts/{{ post.id }}/edit">수정하기</a>
-  <form action="/posts/{{ post.id }}/delete" method="post">
-    <input type="submit" value="삭제하기">
-  </form>
+  {% if user and post.user_id == user.id %}
+    <a href="/posts/{{ post.id }}/edit">수정하기</a>
+    <form action="/posts/{{ post.id }}/delete" method="post">
+      <input type="submit" value="삭제하기">
+    </form>
+  {% endif %}
 
   <hr>
 

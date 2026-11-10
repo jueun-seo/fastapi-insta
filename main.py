@@ -25,6 +25,9 @@ class Post(Base):
     back_populates='post',
     cascade='all, delete-orphan'
   )
+  # 기존 글(글쓴이 없음)이 있어서 비어 있어도 되는 칸으로 둠
+  user_id: Mapped[int | None] = mapped_column(ForeignKey('users.id'))
+  user: Mapped['User | None'] = relationship(back_populates='posts')
 
 class Comment(Base):
   __tablename__ = 'comments'
@@ -41,6 +44,7 @@ class User(Base):
   id: Mapped[int] = mapped_column(primary_key=True)
   username: Mapped[str] = mapped_column(unique=True) #unique한가요?체크. 모든 username이 독립적일 수 있도록
   password_hash: Mapped[str]
+  posts: Mapped[list['Post']] = relationship(back_populates='user')
 
 class UserSession(Base):
   __tablename__ = 'sessions'
@@ -109,6 +113,10 @@ def post_new(
     request: Request,
     user: User | None = Depends(get_current_user) # |기호는 or
   ):
+
+  if user is None:
+    return RedirectResponse('/login', status_code=303)
+
   return templates.TemplateResponse(
     request=request,
     name='new.html',
@@ -117,9 +125,16 @@ def post_new(
 
 
 @app.post('/posts/create')
-def post_create(content: str = Form(), db: Session = Depends(get_db)):
-  # db = Session(engine)
-  post = Post(content=content)
+def post_create(
+  content: str = Form(),
+  db: Session = Depends(get_db),
+  user: User | None = Depends(get_current_user)
+):
+  # 로그인한 사람만 글을 쓸 수 있음
+  if user is None:
+    return RedirectResponse('/login', status_code=303)
+
+  post = Post(content=content, user=user)
   db.add(post)
   db.commit()
 
@@ -150,6 +165,13 @@ def post_edit(
   post: Post = Depends(get_post_or_404),
   user: User | None = Depends(get_current_user)
 ):
+  if user is None:
+    return RedirectResponse('/login', status_code=303)
+
+  # 내 글이 아니면 수정 화면 접근 불가
+  if post.user_id != user.id:
+    raise HTTPException(status_code=403, detail='내 글만 수정할 수 있습니다.')
+
   return templates.TemplateResponse(
     request=request,
     name='edit.html',
@@ -159,10 +181,17 @@ def post_edit(
 
 @app.post('/posts/{post_id}/update')
 def post_update(
-  content: str = Form(), 
+  content: str = Form(),
   post: Post = Depends(get_post_or_404),
-  db: Session = Depends(get_db)
+  db: Session = Depends(get_db),
+  user: User | None = Depends(get_current_user)
 ):
+  if user is None:
+    return RedirectResponse('/login', status_code=303)
+
+  if post.user_id != user.id:
+    raise HTTPException(status_code=403, detail='내 글만 수정할 수 있습니다.')
+
   post.content = content
   db.commit()
 
@@ -172,8 +201,15 @@ def post_update(
 @app.post('/posts/{post_id}/delete')
 def post_delete(
   post: Post = Depends(get_post_or_404),
-  db: Session = Depends(get_db)
+  db: Session = Depends(get_db),
+  user: User | None = Depends(get_current_user)
 ):
+  if user is None:
+    return RedirectResponse('/login', status_code=303)
+
+  if post.user_id != user.id:
+    raise HTTPException(status_code=403, detail='내 글만 삭제할 수 있습니다.')
+
   db.delete(post)
   db.commit()
   return RedirectResponse('/posts', status_code=303)
