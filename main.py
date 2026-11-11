@@ -6,6 +6,7 @@ from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, Session, rela
 from datetime import datetime
 from pwdlib import PasswordHash
 import secrets
+from typing import Annotated
 
 DB_URL = 'postgresql+psycopg://sd4:sd4@localhost:5432/insta'
 engine = create_engine(DB_URL, echo=True)
@@ -25,9 +26,10 @@ class Post(Base):
     back_populates='post',
     cascade='all, delete-orphan'
   )
-  # 기존 글(글쓴이 없음)이 있어서 비어 있어도 되는 칸으로 둠
-  user_id: Mapped[int | None] = mapped_column(ForeignKey('users.id'))
-  user: Mapped['User | None'] = relationship(back_populates='posts')
+  user_id: Mapped[int] = mapped_column(ForeignKey('users.id'))
+  user: Mapped['User'] = relationship(back_populates='posts')
+
+  likes: Mapped[list['Like']] = relationship(cascade='all, delete-orphan')
 
 class Comment(Base):
   __tablename__ = 'comments'
@@ -35,34 +37,53 @@ class Comment(Base):
   id: Mapped[int] = mapped_column(primary_key=True)
   content: Mapped[str]
   created_at: Mapped[datetime] = mapped_column(server_default=func.now())
+
+  #Post(1) : Comment(N)
   post_id: Mapped[int] = mapped_column(ForeignKey('posts.id'))
   post: Mapped['Post'] = relationship(back_populates='comments')
+
+  # User(1) : Comment(N)
+  user_id: Mapped[int] = mapped_column(ForeignKey('users.id'))
+  user: Mapped['User'] = relationship()
+
 
 class User(Base):
   __tablename__ = 'users'
 
   id: Mapped[int] = mapped_column(primary_key=True)
-  username: Mapped[str] = mapped_column(unique=True) #unique한가요?체크. 모든 username이 독립적일 수 있도록
+  username: Mapped[str] = mapped_column(unique=True)
   password_hash: Mapped[str]
   posts: Mapped[list['Post']] = relationship(back_populates='user')
+  # comments: Mapped[list['Comment']] = relationship(back_populates='user')
+
 
 class UserSession(Base):
   __tablename__ = 'sessions'
 
+  # 신분증
   id: Mapped[str] = mapped_column(primary_key=True)
   user_id: Mapped[int] = mapped_column(ForeignKey('users.id'))
   created_at: Mapped[datetime] = mapped_column(server_default=func.now())
   user: Mapped['User'] = relationship()
 
+class Like(Base):
+  __tablename__='likes'
+
+  user_id: Mapped[int] = mapped_column(ForeignKey('users.id'), primary_key=True)
+  post_id: Mapped[int] = mapped_column(ForeignKey('posts.id'), primary_key=True)
+
 app = FastAPI()
 templates = Jinja2Templates(directory='templates')
-password_hash=PasswordHash.recommended()
+password_hash = PasswordHash.recommended()
 
 def get_db():
   with Session(engine) as db:
     yield db
 
-def get_post_or_404(post_id: int, db: Session = Depends(get_db)):
+SessionDep = Annotated[Session, Depends(get_db)]
+
+def get_post_or_404(post_id: int, db: SessionDep):
+  # SELECT * FROM posts WHERE post_id = 10;
   post = db.get(Post, post_id)
 
   if post is None:
@@ -71,20 +92,31 @@ def get_post_or_404(post_id: int, db: Session = Depends(get_db)):
   
   return post
 
-def get_current_user(request:Request, db: Session = Depends(get_db)):
+PostDep = Annotated[Post, Depends(get_post_or_404)]
+
+
+def get_current_user(request: Request, db: SessionDep):
   session_id = request.cookies.get('session_id')
 
-  #신분증 유무 판단
+  # 신분증 유무 판단
   if session_id is None:
     return None
 
   user_session = db.get(UserSession, session_id)
 
-  #신분증 유효한지 검사
+  # 신분증 유효한지 검사
   if user_session is None:
     return None
 
   return user_session.user
+
+CurrentUserDep = Annotated[User | None, Depends(get_current_user)]
+
+  
+
+  
+
+
 
 @app.get('/')
 def home():
@@ -94,46 +126,50 @@ def home():
 @app.get('/posts')
 def post_list(
   request: Request, 
-  db: Session = Depends(get_db),
-  user: User | None = Depends(get_current_user)
-  ):
+  db: SessionDep,
+  user: CurrentUserDep
+):
   # with Session(engine) as db:
   
+  liked_ids = []
+  if user:
+    liked_ids = db.scalars(select(Like.post_id).where(user.id == Like.user_id))
+
   # posts = db.scalars(select(Post)).all()
   posts = db.scalars(select(Post).order_by(Post.created_at.desc())).all()
   return templates.TemplateResponse(
     request=request,
     name='list.html',
-    context={'posts': posts, 'user': user}
+    context={'posts': posts, 'user': user, 'liked_ids': liked_ids }
   )
 
 
 @app.get('/posts/new')
 def post_new(
-    request: Request,
-    user: User | None = Depends(get_current_user) # |기호는 or
-  ):
-
+  request: Request,
+  user: CurrentUserDep
+):
+  # 로그인 하지 않은사람이라면
   if user is None:
     return RedirectResponse('/login', status_code=303)
-
+ 
   return templates.TemplateResponse(
     request=request,
     name='new.html',
-    context={'user':user}
+    context={'user': user}
   )
 
 
 @app.post('/posts/create')
 def post_create(
-  content: str = Form(),
-  db: Session = Depends(get_db),
-  user: User | None = Depends(get_current_user)
+  db: SessionDep,
+  user: CurrentUserDep,
+  content: str = Form()
 ):
-  # 로그인한 사람만 글을 쓸 수 있음
   if user is None:
     return RedirectResponse('/login', status_code=303)
 
+  # db = Session(engine)
   post = Post(content=content, user=user)
   db.add(post)
   db.commit()
@@ -144,9 +180,9 @@ def post_create(
 
 @app.get('/posts/{post_id}')
 def post_detail(
-  request: Request,
-  post: Post = Depends(get_post_or_404),
-  user: User | None = Depends(get_current_user)
+  request: Request, 
+  post: PostDep,
+  user: CurrentUserDep
 ):
   # comments = db.scalars(select(Comment).where().order_by(Comment.created_at.desc()))
   return templates.TemplateResponse(
@@ -161,37 +197,40 @@ def post_detail(
 
 @app.get('/posts/{post_id}/edit')
 def post_edit(
-  request: Request,
-  post: Post = Depends(get_post_or_404),
-  user: User | None = Depends(get_current_user)
+  request: Request, 
+  post: PostDep,
+  user: CurrentUserDep
 ):
   if user is None:
     return RedirectResponse('/login', status_code=303)
 
-  # 내 글이 아니면 수정 화면 접근 불가
+  # 게시물 작성자와 로그인한 사람 비교
   if post.user_id != user.id:
-    raise HTTPException(status_code=403, detail='내 글만 수정할 수 있습니다.')
-
+    raise HTTPException(status_code=403, detail='내 글만 수정 할 수 있습니다.')
+  
   return templates.TemplateResponse(
     request=request,
     name='edit.html',
-    context={'post': post, 'user': user}
+    context={
+      'post': post,
+      'user': user
+    }
   )
 
 
 @app.post('/posts/{post_id}/update')
 def post_update(
-  content: str = Form(),
-  post: Post = Depends(get_post_or_404),
-  db: Session = Depends(get_db),
-  user: User | None = Depends(get_current_user)
+  post: PostDep,
+  db: SessionDep,
+  user: CurrentUserDep,
+  content: str = Form()
 ):
   if user is None:
-    return RedirectResponse('/login', status_code=303)
-
+      return RedirectResponse('/login', status_code=303)
+    # 게시물 작성자와 로그인한 사람 비교
   if post.user_id != user.id:
-    raise HTTPException(status_code=403, detail='내 글만 수정할 수 있습니다.')
-
+    raise HTTPException(status_code=403, detail='내 글만 수정 할 수 있습니다.')
+  
   post.content = content
   db.commit()
 
@@ -200,15 +239,15 @@ def post_update(
 
 @app.post('/posts/{post_id}/delete')
 def post_delete(
-  post: Post = Depends(get_post_or_404),
-  db: Session = Depends(get_db),
-  user: User | None = Depends(get_current_user)
+  post: PostDep,
+  db: SessionDep,
+  user: CurrentUserDep
 ):
   if user is None:
-    return RedirectResponse('/login', status_code=303)
-
+      return RedirectResponse('/login', status_code=303)
+    # 게시물 작성자와 로그인한 사람 비교
   if post.user_id != user.id:
-    raise HTTPException(status_code=403, detail='내 글만 삭제할 수 있습니다.')
+    raise HTTPException(status_code=403, detail='내 글만 수정 할 수 있습니다.')
 
   db.delete(post)
   db.commit()
@@ -217,11 +256,15 @@ def post_delete(
 
 @app.post('/posts/{post_id}/comments/create')
 def comment_create(
-  content: str = Form(),
-  post: Post = Depends(get_post_or_404),
-  db: Session = Depends(get_db)
+  post: PostDep,
+  db: SessionDep,
+  user: CurrentUserDep,
+  content: str = Form()
 ):
-  comment = Comment(content=content, post=post)
+  if user is None:
+    return RedirectResponse('/login', status_code=303)
+  
+  comment = Comment(content=content, post=post, user=user)
   db.add(comment)
   db.commit()
 
@@ -229,93 +272,124 @@ def comment_create(
 
 
 @app.post('/posts/{post_id}/comments/{comment_id}/delete')
-def comment_delete(post_id: int, comment_id: int, db: Session = Depends(get_db)):
+def comment_delete(
+  post_id: int, 
+  comment_id: int, 
+  db: SessionDep,
+  user: CurrentUserDep
+):
+  # 로그인 안한사람 
+  if user is None:
+    return RedirectResponse('/login', status_code=303)
+
+  # 내가 쓴 댓글인지
   comment = db.get(Comment, comment_id)
+  if comment.user_id != user.id:
+    raise HTTPException(status_code=403, detail='내 댓글만 삭제 가능')
+  
+  
   db.delete(comment)
   db.commit()
 
   return RedirectResponse(f'/posts/{post_id}', status_code=303)
 
+
+# a태그를 통해서 들어오는 signup
 @app.get('/signup')
 def signup_form(
   request: Request,
-  user: User | None = Depends(get_current_user)
+  user: CurrentUserDep
 ):
   return templates.TemplateResponse(
     request=request,
     name='signup.html',
-    context={'user': user}
+    context={
+      'user': user
+    }
   )
 
 
+# form method='post' 방식으로 들어오는 signup
 @app.post('/signup')
 def signup(
   request: Request,
+  db: SessionDep,
   username: str = Form(),
-  password: str = Form(),
-  db: Session = Depends(get_db),
-  current_user: User | None = Depends(get_current_user)
+  password: str = Form()
 ):
-  #이미 있는 유저인지 검증
-  exists = db.scalar(select(User).where(User.username==username)) #usertable 조회
-
-  #이미 유저네임 사용하는 경우
+  # 이미 있는 유저인지 검증
+  # SELECT * FROM users WHERE username='changhee'
+  exists = db.scalar(   select(User).where(User.username == username)  )
+  
+  # 이미 유저네임을 사용하는 경우 
   if exists:
     return templates.TemplateResponse(
       request=request,
       name='signup.html',
-      context={'error': '이미 있는 아이디입니다.', 'user': current_user}
+      context={'error': '이미 있는 아이디입니다.'}
     )
 
-  hashed_pw=password_hash.hash(password)
   
+  # password를 암호화
+  # from pwdlib import PasswordHash
+  
+  hashed_pw = password_hash.hash(password)
+
   user = User(username=username, password_hash=hashed_pw)
   db.add(user)
   db.commit()
 
   return RedirectResponse('/login', status_code=303)
 
+
 @app.get('/login')
-def login_form(request: Request):
+def login_form(
+  request: Request,
+  user: CurrentUserDep
+):
   return templates.TemplateResponse(
     request=request,
-    name='login.html'
+    name='login.html',
+    context={'user': user}
   )
+
 
 @app.post('/login')
 def login(
   request: Request,
+  db: SessionDep,
   username: str = Form(),
-  password: str = Form(),
-  db: Session = Depends(get_db)
+  password: str = Form()
 ):
-  user = db.scalar(select(User).where(User.username==username))
+  # 방금 입력한 아이디에 해당하는 유저 찾기
+  user = db.scalar(select(User).where(User.username == username))
 
   # password_hash.verify(password, user.password_hash)
-
+  # 유저가 존재하지 않거나 / 그 유저의 비밀번호와 방금 입력한 비밀번호가 다른경우 => 에러입니다.
   if (user is None) or not (password_hash.verify(password, user.password_hash)):
     return templates.TemplateResponse(
-     request=request,
-     name='login.html',
-     context={'error': '아이디가 존재하지 않거나 비밀번호가 틀렸습니다.'}
-   )
+      request=request,
+      name='login.html',
+      context={'error': '아이디가 존재하지 않거나 비밀번호가 틀렸습니다.'}
+    )
 
-  #신분증 발행
-  session_id = secrets.token_urlsafe(32) 
-  #발행한 신분증을 DB에 저장
+  # 비밀번호가 일치하면 => 신분증 발행
+  session_id = secrets.token_urlsafe(32)
+  # 발행한 신분증을 DB에 저장
   user_session = UserSession(id=session_id, user=user)
   db.add(user_session)
   db.commit()
 
-#신분증을 유저한테 전달
+  # 신분증을 유저한테 전달 (쿠키에 저장시키기)
   response = RedirectResponse('/posts', status_code=303)
   response.set_cookie('session_id', session_id, httponly=True, samesite='lax')
   return response
 
+
 @app.post('/logout')
-def logout(request: Request, db: Session=Depends(get_db)):
-  #신분증정보 가져오기
-  session_id=request.cookies.get('session_id')
+def logout(request: Request, db: SessionDep):
+  # 신분증 정보 가져오기 
+  session_id = request.cookies.get('session_id') 
   user_session = db.get(UserSession, session_id)
 
   if user_session:
@@ -325,3 +399,25 @@ def logout(request: Request, db: Session=Depends(get_db)):
   response = RedirectResponse('/posts', status_code=303)
   response.delete_cookie('session_id')
   return response
+
+@app.post('/posts/{post_id}/likes')
+def post_like(
+  post: PostDep,
+  db: SessionDep,
+  user: CurrentUserDep
+):
+  if user is None:
+    return RedirectResponse('/login', status_code=303)
+
+  result = db.get(Like, (user.id, post.id))
+  #좋아요가 이미 눌린 경우
+  if result:
+    db.delete(result)
+  else:
+    like = Like(user_id=user.id,post_id=post.id)
+    db.add(like)
+  #create / delete 가 하나의 함수에서 동작
+
+  db.commit()
+
+  return RedirectResponse('/posts', status_code=303)
