@@ -3,7 +3,9 @@
 {% block title %} {{ owner.username }}의 프로필 {% endblock %}
 
 {% block content %}
-  <img src="{{ owner.avatar_url }}" alt="" width="100px" height="300px">
+  {% if owner.avatar_url %}
+    <img src="{{ owner.avatar_url }}" alt="" width="100" height="100" style="border-radius: 50%;">
+  {% endif %}
   <h1>{{ owner.username }}</h1>
   <p>게시물 {{ posts | length }}개</p>
   <p>팔로워 {{ follower_count }}명</p>
@@ -15,13 +17,16 @@
     </form>
   {% elif user %}
     {# 로그인했고 내 프로필일 때만 사진 변경 폼이 보여요 #}
-    <form action="/users/{{ owner.username }}/photo" method="post" enctype="multipart/form-data">
+    <form action="/users/{{ owner.username }}/avatar" method="post" enctype="multipart/form-data">
       <input type="file" name="photo" accept="image/*" required>
       <input type="submit" value="프로필 사진 변경">
     </form>
   {% endif %}
 
   {% for post in posts %}
+    {% if post.image_url %}
+      <img src="{{ post.image_url }}" alt="" width="100" height="100">
+    {% endif %}
     <p>
       {{ post.content }}
     </p>
