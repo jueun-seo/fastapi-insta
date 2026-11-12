@@ -3,7 +3,7 @@
 {% block title %} {{ owner.username }}의 프로필 {% endblock %}
 
 {% block content %}
-
+  <img src="{{ owner.avatar_url }}" alt="" width="100px" height="300px">
   <h1>{{ owner.username }}</h1>
   <p>게시물 {{ posts | length }}개</p>
   <p>팔로워 {{ follower_count }}명</p>
@@ -12,6 +12,12 @@
   {% if user and user.id != owner.id %}
     <form action="/users/{{ owner.username }}/follows" method="post">
       <input type="submit" value="{{ '팔로우취소' if is_following else '팔로우' }}">
+    </form>
+  {% elif user %}
+    {# 로그인했고 내 프로필일 때만 사진 변경 폼이 보여요 #}
+    <form action="/users/{{ owner.username }}/photo" method="post" enctype="multipart/form-data">
+      <input type="file" name="photo" accept="image/*" required>
+      <input type="submit" value="프로필 사진 변경">
     </form>
   {% endif %}
 

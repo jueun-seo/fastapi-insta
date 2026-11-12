@@ -8,7 +8,7 @@
   <h1>전체게시물</h1>
   {% for post in posts %}
     {% if post.image_url %}
-      <img src="{{ post.image_url }}" width="200">
+      <img src="{{ post.image_url }}" width="300px" height="300px">
     {% endif %}
     <p>{{ post.content }}</p>
     <small><a href="/users/{{ post.user.username }}">{{ post.user.username }}</a></small>
