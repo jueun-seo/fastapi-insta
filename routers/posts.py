@@ -64,7 +64,7 @@ def post_create(
     image_url = save_photo(photo)
 
   # db = Session(engine)
-  post = Post(content=content, user=user)
+  post = Post(content=content, user=user, image_url=image_url)
   db.add(post)
   db.commit()
 
