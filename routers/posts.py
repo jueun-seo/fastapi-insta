@@ -1,6 +1,7 @@
-from fastapi import APIRouter, Request, Form, HTTPException
+from fastapi import APIRouter, Request, Form, HTTPException, File, UploadFile
 from fastapi.responses import RedirectResponse
 from sqlalchemy import select
+from photos import save_photo
 
 from models import Post, Comment, Like
 from deps import templates, SessionDep, PostDep, CurrentUserDep
@@ -50,10 +51,17 @@ def post_new(
 def post_create(
   db: SessionDep,
   user: CurrentUserDep,
-  content: str = Form()
+  content: str = Form(),
+  photo: UploadFile | None = File(None)
+  #이미지는 DB에 저장 안함. 이미지는 파일. 파일 저장 폴더를 만들어 로컬에 저장. 그 경로만 기록.
 ):
   if user is None:
     return RedirectResponse('/login', status_code=303)
+
+  # 사진을 골랐을 때만 저장 (안 골랐으면 None)
+  image_url = None
+  if photo and photo.filename:
+    image_url = save_photo(photo)
 
   # db = Session(engine)
   post = Post(content=content, user=user)
