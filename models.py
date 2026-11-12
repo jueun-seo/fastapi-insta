@@ -43,7 +43,9 @@ class User(Base):
   password_hash: Mapped[str]
   posts: Mapped[list['Post']] = relationship(back_populates='user')
   # comments: Mapped[list['Comment']] = relationship(back_populates='user')
-
+  likes: Mapped[list['Like']] = relationship()
+  followings: Mapped[list['Follow']] = relationship(foreign_keys='Follow.follower_id')
+  followers: Mapped[list['Follow']] = relationship(foreign_keys='Follow.following_id')
 
 class UserSession(Base):
   __tablename__ = 'sessions'
@@ -59,3 +61,10 @@ class Like(Base):
 
   user_id: Mapped[int] = mapped_column(ForeignKey('users.id'), primary_key=True)
   post_id: Mapped[int] = mapped_column(ForeignKey('posts.id'), primary_key=True)
+
+
+class Follow(Base):
+  __tablename__ = 'follows'
+
+  following_id: Mapped[int] = mapped_column(ForeignKey('users.id'),primary_key=True)
+  follower_id: Mapped[int] = mapped_column(ForeignKey('users.id'),primary_key=True)
